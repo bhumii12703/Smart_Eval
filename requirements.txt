@@ -1,7 +1,11 @@
 streamlit
-google-generativeai==0.9.0
+google-generativeai==0.8.5
 pdf2image
 Pillow
 PyMuPDF
 opencv-python-headless
 #gemini-2.5-flash-preview-09-2025
+streamlit
+pandas
+plotly
+pdf2image
