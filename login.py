@@ -2,10 +2,8 @@
 login.py - Authentication System for Smart Eval
 
 --- MODIFIED ---
-- The main `login_page` function now accepts `get_motivational_quote` as an argument.
-- ALL login page UI (logo, quote, divider, radio, box) is now
-  contained inside the center column (`col2`) to fix alignment and "blank box" bugs.
-- Cleared "evaluation_analytics" from session state on logout.
+- Removed the redundant `st.rerun()` call from the `logout()` function.
+  Streamlit automatically reruns after an on_click callback anyway.
 """
 
 import streamlit as st
@@ -72,7 +70,6 @@ def authenticate_user(username, password):
     
     return False, "Invalid password"
 
-# --- MODIFIED: Function now accepts the quote_function ---
 def login_page(get_motivational_quote):
     """Display login page"""
     st.markdown("""
@@ -119,7 +116,6 @@ def login_page(get_motivational_quote):
     </style>
     """, unsafe_allow_html=True)
     
-    # --- MODIFICATION: ALL UI is now inside col2 ---
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
@@ -166,7 +162,7 @@ def login_page(get_motivational_quote):
                             st.session_state.username = usn_upper
                             st.session_state.role = "student"
                             st.success("✅ Login successful! Loading status...")
-                            st.rerun()
+                            st.rerun() # This one is NOT in a callback, so it's OK
                         else:
                             st.error("❌ USN not found in master list. Please contact your teacher.")
                     else:
@@ -194,7 +190,7 @@ def login_page(get_motivational_quote):
                                 st.session_state.user_data = result
                                 st.session_state.role = result.get("role", "teacher")
                                 st.success("✅ Login successful!")
-                                st.rerun()
+                                st.rerun() # This one is also NOT in a callback, so it's OK
                             elif not success:
                                 st.error(f"❌ {result}")
                             else:
@@ -246,7 +242,8 @@ def logout():
     for key in keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
-    st.rerun() # Re-run to go back to login page
+    # st.rerun() # <-- THIS IS THE LINE TO REMOVE/COMMENT OUT
+    # The app will re-run automatically because this function is in an on_click.
 
 def is_logged_in():
     """Check if user is logged in"""
