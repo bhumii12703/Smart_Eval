@@ -4,10 +4,12 @@ dashboard.py
 Streamlit dashboard page for SmartEval analytics and quick stats.
 
 --- MODIFIED ---
-- Added 'load_student_list' to read 'data/students.json'.
-- 'load_all_evaluations' now loads from USN filenames.
-- 'calculate_global_metrics' now calculates 'pending' and 'completion_pct'.
-- 'display_dashboard' is updated with the new metric cards.
+- Replaced previous charts with three new, easy-to-analyze visualizations:
+  1. A "Speedometer" Gauge Chart for the Class Average.
+  2. A Donut Chart for the Pass/Fail Ratio.
+  3. A sorted Bar Chart to show the Hardest/Easiest Questions.
+- Fixed bug where `get_overall_scores_df` was not reading the
+  correct keys from the analytics data, causing charts to show "0".
 """
 
 import streamlit as st
@@ -16,7 +18,8 @@ import os
 import json
 from datetime import datetime
 import plotly.graph_objects as go
-from src.utils import save_json # Assuming utils.py has save_json
+import plotly.express as px 
+# from src.utils import save_json # Assuming utils.py has save_json
 
 # --- Helper Functions ---
 
@@ -38,7 +41,6 @@ def load_all_evaluations(scores_dir="outputs/scores"):
         return []
         
     all_evals = []
-    # Files are now named like '1AB19CS001.json'
     files = [f for f in os.listdir(scores_dir) if f.endswith(".json")]
     
     for fname in files:
@@ -52,112 +54,213 @@ def load_all_evaluations(scores_dir="outputs/scores"):
             
     return all_evals
 
-def calculate_global_metrics(all_evals: list, student_list: list) -> dict:
-    """Calculates global metrics from all loaded evaluations."""
-    
-    total_papers = len(student_list)
-    attempted_papers = len(all_evals)
-    pending_papers = total_papers - attempted_papers
-    completion_pct = (attempted_papers / total_papers * 100) if total_papers > 0 else 0
-    
-    total_score = 0
-    total_max = 0
-    
+# --- NEW: Helper to get overall scores (for Gauge/Donut) ---
+def get_overall_scores_df(all_evals):
+    """
+    Processes all evaluation files to get a simple DataFrame of
+    USN and final score percentage.
+    """
+    perf_data = []
     for eval_data in all_evals:
+        # --- BUG FIX: Read from the correct nested keys ---
         analytics = eval_data.get("analytics_data", {})
-        total_data = analytics.get("total", {})
+        total_data = analytics.get("total_score", {}) # <-- This is the correct key
         
-        # Use adjusted score if available, else original
-        total_score += total_data.get("adjusted", total_data.get("original", 0))
-        total_max += total_data.get("max", 0)
-        
-    average_score = (total_score / attempted_papers) if attempted_papers > 0 else 0
-    average_score_max = (total_max / attempted_papers) if attempted_papers > 0 else 0
-    avg_score_str = f"{average_score:.1f} / {average_score_max:.1f}" if attempted_papers > 0 else "N/A"
+        # Check 'total_score' first, then 'total' as a fallback
+        if not total_data:
+             total_data = analytics.get("total", {})
 
-    return {
-        "total_papers": total_papers,
-        "attempted_papers": attempted_papers,
-        "pending_papers": pending_papers,
-        "completion_pct": f"{completion_pct:.1f}%",
-        "average_score": avg_score_str
-    }
+        # Use the "percentage" key if it exists, otherwise calculate it
+        percentage = total_data.get("percentage")
+        
+        if percentage is None:
+            # Fallback to manual calculation
+            awarded = total_data.get("awarded", total_data.get("adjusted", total_data.get("original", 0)))
+            max_val = total_data.get("max", 100) 
+            percentage = (awarded / max_val * 100) if max_val > 0 else 0
+        
+        perf_data.append({
+            "usn": eval_data.get("usn", "Unknown"),
+            "score_percent": percentage
+        })
+    
+    if not perf_data:
+        return pd.DataFrame(columns=["usn", "score_percent"])
+        
+    return pd.DataFrame(perf_data)
+
+# --- NEW: Helper to get per-question scores (for Bar Chart) ---
+def get_detailed_performance_df(all_evals):
+    """
+    Processes all evaluation files to create a flat DataFrame
+    for the question-by-question bar chart.
+    """
+    detailed_data = []
+    for eval_data in all_evals:
+        usn = eval_data.get("usn", "Unknown")
+        # --- BUG FIX: Read from the correct nested key ---
+        breakdown = eval_data.get("analytics_data", {}).get("detailed_breakdown", [])
+        
+        for item in breakdown:
+            q_num = item.get("question", "N/A")
+            part = item.get("part", "")
+            q_name = f"Q{q_num}{part}" # e.g., "Q1a"
+            
+            awarded = item.get("marks_awarded", 0)
+            max_m = item.get("max_marks", 0)
+            percentage = (awarded / max_m * 100) if max_m > 0 else 0
+            
+            detailed_data.append({
+                "usn": usn,
+                "question": q_name,
+                "score_percent": percentage
+            })
+            
+    if not detailed_data:
+        return pd.DataFrame(columns=["usn", "question", "score_percent"])
+        
+    return pd.DataFrame(detailed_data)
+
 
 # --- Main Display Function ---
-
 def display_dashboard(subject_name):
     """Display the main dashboard with analytics and quick stats"""
     
     st.header(f"📈 Dashboard: {subject_name}")
     st.markdown("Here's a global overview of all evaluations processed by the system.")
     
-    # Load data and calculate metrics
     student_list = load_student_list()
     all_evaluations = load_all_evaluations()
-    metrics = calculate_global_metrics(all_evaluations, student_list)
+    
+    # Process the data
+    overall_perf_df = get_overall_scores_df(all_evaluations)
+    detailed_perf_df = get_detailed_performance_df(all_evaluations)
+    
+    # Calculate top-level metrics
+    total_papers = len(student_list)
+    attempted_papers = len(all_evaluations)
+    pending_papers = total_papers - attempted_papers
+    completion_pct = (attempted_papers / total_papers * 100) if total_papers > 0 else 0
+    class_average = overall_perf_df['score_percent'].mean() if not overall_perf_df.empty else 0
     
     st.divider()
 
-    # --- Top Metric Cards (as requested) ---
+    # --- Top Metric Cards ---
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-        st.metric(label="Total Papers", value=metrics["total_papers"])
+        st.metric(label="Total Papers", value=total_papers)
         st.markdown('</div>', unsafe_allow_html=True)
     with col2:
         st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-        st.metric(label="Evaluated", value=metrics["attempted_papers"])
+        st.metric(label="Evaluated", value=attempted_papers)
         st.markdown('</div>', unsafe_allow_html=True)
     with col3:
         st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-        st.metric(label="Pending", value=metrics["pending_papers"])
+        st.metric(label="Pending", value=pending_papers)
         st.markdown('</div>', unsafe_allow_html=True)
     with col4:
         st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-        st.metric(label="Completion %", value=metrics["completion_pct"])
+        st.metric(label="Completion", value=f"{completion_pct:.1f}%")
         st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True) # Spacer
+    st.markdown("<br>", unsafe_allow_html=True) 
 
     # --- Main Dashboard Area (Charts and Recent Evals) ---
-    col_main, col_side = st.columns([2, 1])
+    col_main, col_side = st.columns([2.5, 1]) # Give main col more space
 
     with col_main:
         st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-        st.subheader("Performance Over Time")
         
-        if all_evaluations:
-            perf_data = []
-            for eval_data in all_evaluations:
-                analytics = eval_data.get("analytics_data", {})
-                total_data = analytics.get("total", {})
-                awarded = total_data.get("adjusted", total_data.get("original", 0))
-                max_val = total_data.get("max", 100) 
-                percentage = (awarded / max_val * 100) if max_val > 0 else 0
+        if all_evaluations and not overall_perf_df.empty:
+            
+            # --- Row 1: Gauge and Donut ---
+            chart_col1, chart_col2 = st.columns(2)
+            
+            with chart_col1:
+                # --- NEW: Chart 1: Class Average (Gauge) ---
+                st.subheader("Class Average Score")
+                fig_gauge = go.Figure(go.Indicator(
+                    mode = "gauge+number",
+                    value = class_average,
+                    title = {'text': "Average Score (%)"},
+                    number = {'font': {'size': 48, 'color': "white"}},
+                    gauge = {'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "white"},
+                             'bar': {'color': "#C48AF5"}, # Main purple
+                             'steps' : [
+                                 {'range': [0, 40], 'color': "#dc3545"}, # Red
+                                 {'range': [40, 75], 'color': "#ffc107"}, # Yellow
+                                 {'range': [75, 100], 'color': "#28a745"}]} # Green
+                ))
+                fig_gauge.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)', 
+                    font={'color': 'white'},
+                    height=300, # Set a fixed height
+                    margin=dict(t=50, b=50)
+                )
+                st.plotly_chart(fig_gauge, use_container_width=True, key="dashboard_gauge")
+
+            with chart_col2:
+                # --- NEW: Chart 2: Pass/Fail (Donut) ---
+                st.subheader("Pass/Fail Ratio")
+                pass_fail_df = overall_perf_df.copy()
+                pass_fail_df['Status'] = pass_fail_df['score_percent'].apply(lambda x: "Pass" if x >= 40 else "Fail")
+                status_counts = pass_fail_df['Status'].value_counts().reset_index()
+                # BUG FIX: Make sure the column is named 'count' if it's not reset properly
+                if 'count' not in status_counts.columns:
+                    status_counts.columns = ['Status', 'count']
+
                 
-                perf_data.append({
-                    "timestamp": pd.to_datetime(eval_data.get("timestamp", datetime.now())),
-                    "score_percent": percentage
-                })
+                fig_donut = px.pie(
+                    status_counts,
+                    names='Status',
+                    values='count', # Use the 'count' column
+                    hole=0.5, # This makes it a donut chart
+                    title="Pass vs. Fail",
+                    color='Status',
+                    color_discrete_map={'Fail': '#dc3545', 'Pass': '#28a745'}
+                )
+                fig_donut.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    height=300,
+                    margin=dict(t=50, b=50),
+                    legend_title="Status"
+                )
+                fig_donut.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig_donut, use_container_width=True, key="dashboard_donut")
+
+            st.divider()
+
+            # --- Row 2: Hardest Questions Bar Chart ---
+            if not detailed_perf_df.empty:
+                st.subheader("Question Performance (Hardest to Easiest)")
+                
+                # Calculate average score per question
+                avg_q_df = detailed_perf_df.groupby('question')['score_percent'].mean().reset_index()
+                avg_q_df = avg_q_df.sort_values(by='score_percent', ascending=True) # Sort low to high
+                
+                fig_bar = px.bar(
+                    avg_q_df,
+                    x='question',
+                    y='score_percent',
+                    title="Average Score by Question",
+                    labels={"score_percent": "Average Score (%)", "question": "Question"},
+                    color='score_percent', # Color by score
+                    color_continuous_scale="RdYlGn", # Red -> Yellow -> Green
+                    range_color=[0, 100]
+                )
+                fig_bar.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                )
+                st.plotly_chart(fig_bar, use_container_width=True, key="dashboard_bar")
             
-            perf_df = pd.DataFrame(perf_data).sort_values(by="timestamp")
-            
-            fig = go.Figure(data=go.Scatter(
-                x=perf_df["timestamp"],
-                y=perf_df["score_percent"],
-                mode='lines+markers',
-                line=dict(color='#C48AF5', width=3), # Purple accent
-                marker=dict(color='#FFFFFF', size=8)
-            ))
-            fig.update_layout(
-                title_text='Average Score % (All Evals)',
-                template="plotly_dark",
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                xaxis_title="Date",
-                yaxis_title="Score (%)"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No detailed question data found to build performance charts. Run an evaluation to see this chart.")
+
         else:
             st.info("No evaluation data yet. Run an evaluation to see performance charts.")
             
@@ -168,10 +271,9 @@ def display_dashboard(subject_name):
         st.subheader("Recent Evaluations")
         
         if all_evaluations:
-            # Sort by timestamp
             all_evaluations.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
             
-            for eval_data in all_evaluations[:5]: # Show top 5 recent
+            for eval_data in all_evaluations[:5]:
                 usn = eval_data.get("usn", "Unknown USN")
                 timestamp_val = eval_data.get("timestamp")
                 if timestamp_val:
@@ -187,15 +289,31 @@ def display_dashboard(subject_name):
             
         st.markdown('</div>', unsafe_allow_html=True)
 
+# This function might not exist in your src/utils.py, so I've commented it out
+# You can add it back if you have it.
+# def save_evaluation_to_history(evaluation_data, history_path):
+#     """
+#     Saves the evaluation dictionary to a specific file path.
+#     """
+#     try:
+#         from src.utils import save_json
+#         save_json(evaluation_data, history_path)
+#         return True
+#     except Exception as e:
+#         st.error(f"Error saving evaluation history: {e}")
+#         return False
+
+# --- Fallback save_evaluation_to_history function ---
+# If you don't have src.utils, this function will be used.
+# Make sure this is defined *outside* the display_dashboard function
 def save_evaluation_to_history(evaluation_data, history_path):
     """
     Saves the evaluation dictionary to a specific file path.
-    The path is now the USN (e.g., 'outputs/scores/1AB19CS001.json').
     """
     try:
-        # Assuming src.utils.save_json exists and works as expected
-        from src.utils import save_json
-        save_json(evaluation_data, history_path)
+        os.makedirs(os.path.dirname(history_path), exist_ok=True)
+        with open(history_path, 'w', encoding='utf-8') as f:
+            json.dump(evaluation_data, f, indent=4)
         return True
     except Exception as e:
         st.error(f"Error saving evaluation history: {e}")
