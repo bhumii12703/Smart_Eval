@@ -1,7 +1,3 @@
-Here is a complete README.md file for your **SmartEval** project, based on the code you provided.
-
-You can copy and paste this directly into a file named `README.md` in your project's root directory.
-
 -----
 
 # 🤖 SmartEval: AI-Powered Evaluation System
